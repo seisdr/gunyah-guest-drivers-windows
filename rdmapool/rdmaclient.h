@@ -33,6 +33,10 @@
 #ifndef _RDMACLIENT_H_
 #define _RDMACLIENT_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Poll thread cadence defaults (see RdmaClientStartPoll). */
 #define RDMA_CLIENT_POLL_SPIN_US     10  /* tight-spin stall between drains (PollIntervalUs==0) */
 #define RDMA_CLIENT_POLL_IDLE_MS     100 /* idle safety-net wakeup */
@@ -133,5 +137,9 @@ NTSTATUS RdmaClientStartPoll(PRDMA_CLIENT c,
 VOID RdmaClientStopPoll(PRDMA_CLIENT c);
 /* Wake the poll thread after submitting work (any IRQL). */
 VOID RdmaClientPollKick(PRDMA_CLIENT c);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RDMACLIENT_H_ */
