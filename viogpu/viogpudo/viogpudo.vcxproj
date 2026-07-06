@@ -267,7 +267,10 @@
     <ClCompile Include="viogpudo.cpp" />
     <ClCompile Include="..\common\baseobj.cpp" />
     <ClCompile Include="..\common\bitops.cpp" />
-    <ClCompile Include="..\..\rdmapool\rdmaclient.c" />
+    <ClCompile Include="..\..\rdmapool\rdmaclient.c">
+      <!-- rdmaclient.c uses plain NT DbgPrint; keep viogpudo's WPP scanner away from it. -->
+      <WppEnabled>false</WppEnabled>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="viogpudo.rc" />
