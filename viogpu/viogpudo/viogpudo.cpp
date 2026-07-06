@@ -2281,6 +2281,27 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
         SetUsePresentProgress(!!value);
     }
 
+    value = 0;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"QueryCapsets", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetQueryCapsets(!!value);
+    }
+
+    value = 0;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"UseHostDisplayInfo", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetUseHostDisplayInfo(!!value);
+    }
+
+    value = 0;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"UseRdmaTransport", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetUseRdmaTransport(!!value);
+    }
+
     // The following keys are optional and no need to report error if them are missing
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PersistentDispMode0Width", &value);
@@ -2398,6 +2419,12 @@ VOID VioGpuAdapter::LogCapsets(VOID)
               ((m_u64HostFeatures & (1ULL << VIRTIO_GPU_F_RESOURCE_BLOB)) != 0) ? 1 : 0,
               ((m_u64HostFeatures & (1ULL << VIRTIO_GPU_F_CONTEXT_INIT)) != 0) ? 1 : 0));
 
+    if (!m_pVioGpuDod->IsQueryCapsets())
+    {
+        DbgPrint(TRACE_LEVEL_INFORMATION, ("%s capset query disabled by registry\n", __FUNCTION__));
+        return;
+    }
+
     for (UINT i = 0; i < m_u32NumCapsets; ++i)
     {
         GPU_RESP_CAPSET_INFO info = {};
@@ -2466,20 +2493,27 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         VioGpuDbgBreak();
         return status;
     }
-    status = RdmaClientConnect(&m_Rdma, "viogpu", 64, 64);
-    if (NT_SUCCESS(status))
+    if (m_pVioGpuDod->IsUseRdmaTransport())
     {
-        ResetRdmaAllocator();
-    }
-    else if (status == STATUS_NOT_FOUND)
-    {
-        status = STATUS_SUCCESS;
+        status = RdmaClientConnect(&m_Rdma, "viogpu", 64, 64);
+        if (NT_SUCCESS(status))
+        {
+            ResetRdmaAllocator();
+        }
+        else if (status == STATUS_NOT_FOUND)
+        {
+            status = STATUS_SUCCESS;
+        }
+        else
+        {
+            DbgPrint(TRACE_LEVEL_FATAL, ("Failed to connect rdmapool, error %x\n", status));
+            VioGpuDbgBreak();
+            return status;
+        }
     }
     else
     {
-        DbgPrint(TRACE_LEVEL_FATAL, ("Failed to connect rdmapool, error %x\n", status));
-        VioGpuDbgBreak();
-        return status;
+        DbgPrint(TRACE_LEVEL_INFORMATION, ("%s rdmapool transport disabled by registry\n", __FUNCTION__));
     }
 
     status = VirtIoDeviceInit();
@@ -3305,7 +3339,7 @@ int VioGpuAdapter::ProcessEdid(void)
 {
     PAGED_CODE();
 
-    if (virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_EDID))
+    if (m_pVioGpuDod->IsUseHostDisplayInfo() && virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_EDID))
     {
         GetEdids();
     }
@@ -3699,7 +3733,14 @@ NTSTATUS VioGpuAdapter::BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo)
 
     DbgPrint(TRACE_LEVEL_INFORMATION, ("ModeCount filtered %d\n", m_ModeCount));
 
-    GetDisplayInfo();
+    if (m_pVioGpuDod->IsUseHostDisplayInfo())
+    {
+        GetDisplayInfo();
+    }
+    else
+    {
+        SetCustomDisplay(NOM_WIDTH_SIZE, NOM_HEIGHT_SIZE);
+    }
 
     if (m_pVioGpuDod->IsPersistentDispMode0Set())
     {

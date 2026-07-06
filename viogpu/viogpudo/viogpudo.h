@@ -44,7 +44,10 @@ typedef struct
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
     UINT UsePresentProgress : 1;
-    UINT Unused : 25;
+    UINT QueryCapsets : 1;
+    UINT UseHostDisplayInfo : 1;
+    UINT UseRdmaTransport : 1;
+    UINT Unused : 22;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -301,6 +304,30 @@ class VioGpuDod
     void SetUsePresentProgress(BOOLEAN enable)
     {
         m_Flags.UsePresentProgress = enable;
+    }
+    BOOLEAN IsQueryCapsets() const
+    {
+        return m_Flags.QueryCapsets;
+    }
+    void SetQueryCapsets(BOOLEAN enable)
+    {
+        m_Flags.QueryCapsets = enable;
+    }
+    BOOLEAN IsUseHostDisplayInfo() const
+    {
+        return m_Flags.UseHostDisplayInfo;
+    }
+    void SetUseHostDisplayInfo(BOOLEAN enable)
+    {
+        m_Flags.UseHostDisplayInfo = enable;
+    }
+    BOOLEAN IsUseRdmaTransport() const
+    {
+        return m_Flags.UseRdmaTransport;
+    }
+    void SetUseRdmaTransport(BOOLEAN enable)
+    {
+        m_Flags.UseRdmaTransport = enable;
     }
     void SetPersistentDispMode0Width(USHORT res)
     {
