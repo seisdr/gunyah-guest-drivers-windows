@@ -10,6 +10,11 @@
  */
 
 #include <ntddk.h>
+#if defined(_M_ARM64)
+/* ARM64 Interlocked* are compiler intrinsics declared in intrin.h; without
+ * it they compile as extern calls that nothing links. */
+#include <intrin.h>
+#endif
 
 #include "rdmaclient.h"
 
