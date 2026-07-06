@@ -215,6 +215,16 @@ class VioGpuQueue
         m_pBuf = pbuf;
     }
     void ReleaseBuffer(PGPU_VBUFFER buf);
+    /*
+     * Sync-command completion handshake. The DPC must deliver completions
+     * through InvokeCompletion (runs complete_cb under the queue lock);
+     * a timed-out waiter calls AbandonSyncBuffer, which either hands the
+     * still-device-owned buffer over to the DPC for auto-release (TRUE)
+     * or reports that the completion already ran (FALSE), in which case
+     * the waiter still owns the buffer and must release it.
+     */
+    void InvokeCompletion(PGPU_VBUFFER buf);
+    BOOLEAN AbandonSyncBuffer(PGPU_VBUFFER buf);
 
   protected:
     _IRQL_requires_max_(DISPATCH_LEVEL) _IRQL_saves_global_(OldIrql,

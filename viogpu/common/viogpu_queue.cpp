@@ -220,6 +220,15 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(_In_ UINT capset_index, _Out_ PGPU_RESP_CAPSE
     }
 
     cmd = (PGPU_GET_CAPSET_INFO)AllocCmdResp(&vbuf, sizeof(GPU_GET_CAPSET_INFO), resp_buf, sizeof(GPU_RESP_CAPSET_INFO));
+    if (cmd == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s failed to allocate command buffer\n", __FUNCTION__));
+        if (resp_buf != NULL)
+        {
+            delete[] reinterpret_cast<PBYTE>(resp_buf);
+        }
+        return FALSE;
+    }
     RtlZeroMemory(cmd, sizeof(GPU_GET_CAPSET_INFO));
     cmd->hdr.type = VIRTIO_GPU_CMD_GET_CAPSET_INFO;
     cmd->capset_index = capset_index;
@@ -234,10 +243,20 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(_In_ UINT capset_index, _Out_ PGPU_RESP_CAPSE
 
     QueueBuffer(vbuf);
     status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
-    if (status != STATUS_TIMEOUT)
+    if (status == STATUS_TIMEOUT && AbandonSyncBuffer(vbuf))
+    {
+        /* Device still owns the buffer; the DPC will release it. */
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s capset_index=%u timed out\n", __FUNCTION__, capset_index));
+        return FALSE;
+    }
+
     {
         PGPU_RESP_CAPSET_INFO resp = (PGPU_RESP_CAPSET_INFO)vbuf->resp_buf;
-        if (resp->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO)
+        if (resp == NULL)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR, ("%s capset_index=%u completed without response buffer\n", __FUNCTION__, capset_index));
+        }
+        else if (resp->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO)
         {
             RtlCopyMemory(capset_info, resp, sizeof(*capset_info));
             ok = TRUE;
@@ -247,10 +266,6 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(_In_ UINT capset_index, _Out_ PGPU_RESP_CAPSE
             DbgPrint(TRACE_LEVEL_ERROR,
                      ("%s capset_index=%u failed response=0x%x\n", __FUNCTION__, capset_index, resp->hdr.type));
         }
-    }
-    else
-    {
-        DbgPrint(TRACE_LEVEL_ERROR, ("%s capset_index=%u timed out\n", __FUNCTION__, capset_index));
     }
 
     ReleaseBuffer(vbuf);
@@ -281,6 +296,15 @@ BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
     }
 
     cmd = (PGPU_CTRL_HDR)AllocCmdResp(&vbuf, sizeof(GPU_CTRL_HDR), resp_buf, sizeof(GPU_RESP_DISP_INFO));
+    if (cmd == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s failed to allocate command buffer\n", __FUNCTION__));
+        if (resp_buf != NULL)
+        {
+            delete[] reinterpret_cast<PBYTE>(resp_buf);
+        }
+        return FALSE;
+    }
     RtlZeroMemory(cmd, sizeof(GPU_CTRL_HDR));
 
     cmd->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
@@ -296,10 +320,19 @@ BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
     QueueBuffer(vbuf);
     status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
 
-    if (status == STATUS_TIMEOUT)
+    if (status == STATUS_TIMEOUT && AbandonSyncBuffer(vbuf))
     {
+        /* Device still owns the buffer; the DPC will release it. */
         DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to ask display info\n"));
-        VioGpuDbgBreak();
+        *buf = NULL;
+        return FALSE;
+    }
+    if (vbuf->resp_buf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s completed without response buffer\n", __FUNCTION__));
+        ReleaseBuffer(vbuf);
+        *buf = NULL;
+        return FALSE;
     }
     *buf = vbuf;
 
@@ -331,6 +364,15 @@ BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
         }
     }
     cmd = (PGPU_CMD_GET_EDID)AllocCmdResp(&vbuf, sizeof(GPU_CMD_GET_EDID), resp_buf, sizeof(GPU_RESP_EDID));
+    if (cmd == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s failed to allocate command buffer\n", __FUNCTION__));
+        if (resp_buf != NULL)
+        {
+            delete[] reinterpret_cast<PBYTE>(resp_buf);
+        }
+        return FALSE;
+    }
     RtlZeroMemory(cmd, sizeof(GPU_CMD_GET_EDID));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_GET_EDID;
@@ -348,10 +390,19 @@ BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
 
     status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
 
-    if (status == STATUS_TIMEOUT)
+    if (status == STATUS_TIMEOUT && AbandonSyncBuffer(vbuf))
     {
+        /* Device still owns the buffer; the DPC will release it. */
         DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to get edid info\n"));
-        VioGpuDbgBreak();
+        *buf = NULL;
+        return FALSE;
+    }
+    if (vbuf->resp_buf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s completed without response buffer\n", __FUNCTION__));
+        ReleaseBuffer(vbuf);
+        *buf = NULL;
+        return FALSE;
     }
 
     *buf = vbuf;
@@ -657,10 +708,58 @@ PGPU_VBUFFER CtrlQueue::DequeueBuffer(_Out_ UINT *len)
     return buf;
 }
 
+void VioGpuQueue::InvokeCompletion(PGPU_VBUFFER buf)
+{
+    KIRQL SavedIrql;
+    void (*cb)(void *ctx);
+    void *ctx;
+
+    Lock(&SavedIrql);
+    cb = buf->complete_cb;
+    ctx = buf->complete_ctx;
+    buf->complete_cb = NULL;
+    buf->complete_ctx = NULL;
+    if (cb != NULL)
+    {
+        cb(ctx);
+    }
+    Unlock(SavedIrql);
+}
+
+BOOLEAN VioGpuQueue::AbandonSyncBuffer(PGPU_VBUFFER buf)
+{
+    KIRQL SavedIrql;
+    BOOLEAN abandoned = FALSE;
+
+    Lock(&SavedIrql);
+    if (buf->complete_cb != NULL)
+    {
+        /* Completion has not run: the device still owns this buffer.
+         * Detach the waiter and let the DPC free it whenever the host
+         * finally completes it. Never recycle it here - the avail ring
+         * still references it. */
+        buf->complete_cb = NULL;
+        buf->complete_ctx = NULL;
+        buf->auto_release = true;
+        abandoned = TRUE;
+    }
+    Unlock(SavedIrql);
+
+    if (abandoned)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s: sync buffer %p abandoned to DPC after timeout\n", __FUNCTION__, buf));
+    }
+    return abandoned;
+}
+
 void VioGpuQueue::ReleaseBuffer(PGPU_VBUFFER buf)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+    if (buf == NULL)
+    {
+        return;
+    }
     m_pBuf->FreeBuf(buf);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -823,7 +922,11 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
         pbuf = CONTAINING_RECORD(pListItem, GPU_VBUFFER, list_entry);
     }
 
-    ASSERT(pbuf);
+    if (pbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s no free buffers\n", __FUNCTION__));
+        goto unlock;
+    }
     memset(pbuf, 0, VBUFFER_SIZE);
     ASSERT(size <= MAX_INLINE_CMD_SIZE);
 
@@ -846,6 +949,16 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
         {
             pbuf->resp_buf = (char *)RdmaClientAllocChunk(m_pRdmaClient);
         }
+        if (pbuf->resp_buf == NULL)
+        {
+            /* Never submit a command without its response descriptor:
+             * the DPC would complete it with resp_buf == NULL. */
+            DbgPrint(TRACE_LEVEL_ERROR,
+                     ("%s rdmapool response chunk unavailable (resp_size=%d)\n", __FUNCTION__, resp_size));
+            InsertTailList(&m_FreeBufs, &pbuf->list_entry);
+            pbuf = NULL;
+            goto unlock;
+        }
     }
     else
     {
@@ -853,6 +966,8 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
     }
     ASSERT(pbuf->resp_buf);
     InsertTailList(&m_InUseBufs, &pbuf->list_entry);
+
+unlock:
 
     if (SavedIrql < DISPATCH_LEVEL)
     {
